@@ -8,6 +8,7 @@
 - [MangaDex](https://mangadex.org/)
 - [Webtoon](https://www.webtoons.com/)
 - [mgeko](https://www.mgeko.cc/)
+- [Sushiscan](https://sushiscan.net/)
 
 ## Request to add websites
 [Here](https://github.com/Ellimaaac/Manga-Update-Notifier/issues/new)
