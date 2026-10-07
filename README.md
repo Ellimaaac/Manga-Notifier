@@ -1,6 +1,9 @@
 # Manga Notifier
 
 A simple Chrome extension that tracks manga and webtoon updates and notifies you when a new chapter is available. Built with ChatGPT.
+<p align="center">
+  <img src="screenshots/library.png" alt="Manga Notifier" width="250">
+</p>
 
 ## Supported websites
 
