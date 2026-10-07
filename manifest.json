@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Manga Notifier",
+  "version": "4.2.19",
+  "description": "Tracks manga and webtoon updates and notifies you when a new chapter is available.",
+  "permissions": [
+    "alarms",
+    "notifications",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.mgeko.cc/*",
+    "https://mgeko.cc/*",
+    "https://mangadex.org/*",
+    "https://api.mangadex.org/*",
+    "https://ww3.mangafreak.me/*",
+    "https://www.mangafreak.me/*",
+    "https://mangafreak.me/*",
+    "https://www.webtoons.com/*",
+    "https://webtoons.com/*",
+    "https://sushiscan.net/*",
+    "https://www.sushiscan.net/*",
+    "https://uploads.mangadex.org/*",
+    "https://images.mangafreak.me/*",
+    "https://webtoon-phinf.pstatic.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Mes alertes manga"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
