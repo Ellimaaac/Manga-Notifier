@@ -38,6 +38,10 @@ It does not use a dedicated remote server or database.
 
 The extension only connects to supported websites to check for new chapters and retrieve manga information.
 
+## License
+
+This project is licensed under the PolyForm Noncommercial License 1.0.0.
+
 ## Request a website
 
 If you want support for another website, open a request here:
