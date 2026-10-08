@@ -5,6 +5,10 @@ const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 const MAX_IMPORT_ENTRIES = 5000;
 const MAX_TITLE_LENGTH = 300;
 const MAX_SHORT_TEXT_LENGTH = 500;
+const WAKE_ALARM_LATE_MS = 60 * 1000;
+const WAKE_NETWORK_GRACE_MS = 12 * 1000;
+const FETCH_RETRY_DELAY_MS = 5 * 1000;
+
 
 const SAFE_COVER_HOSTS = new Set([
     'www.mgeko.cc',
@@ -19,7 +23,8 @@ const SAFE_COVER_HOSTS = new Set([
     'webtoons.com',
     'webtoon-phinf.pstatic.net',
     'sushiscan.net',
-    'www.sushiscan.net'
+    'www.sushiscan.net',
+    'static.mfcdn.nl'
 ]);
 
 
@@ -171,6 +176,38 @@ function normalizeUrl(raw) {
     }
 
 
+
+    // MangaFire
+    if (
+        [
+            'mangafire.to',
+            'www.mangafire.to'
+        ].includes(url.hostname)
+    ) {
+        url.search = '';
+
+        const match =
+            url.pathname.match(
+                /^\/title\/([^/?#]+)\/?$/i
+            );
+
+        if (!match) {
+            throw new Error(
+                'Utilise une URL MangaFire de titre'
+            );
+        }
+
+        url.hostname = 'mangafire.to';
+        url.pathname =
+            `/title/${match[1]}`;
+
+        return {
+            url: url.toString(),
+            site: 'mangafire'
+        };
+    }
+
+
     // WEBTOON
     if (
         [
@@ -204,7 +241,7 @@ function normalizeUrl(raw) {
     }
 
     throw new Error(
-        'Site accepté : Mgeko, MangaDex, MangaFreak, SushiScan ou WEBTOON'
+        'Site accepté : Mgeko, MangaDex, MangaFreak, MangaFire, SushiScan ou WEBTOON'
     );
 }
 
@@ -689,12 +726,12 @@ function extractMangaFreak(html, url) {
             const day = dateMatch[3].padStart(2, '0');
 
             /*
-             * MangaFreak fournit seulement une date, pas une heure.
-             * On stocke donc midi local au lieu de minuit pour éviter
-             * qu'un changement de fuseau affiche le jour précédent.
+             * MangaFreak fournit ses dates en YYYY/MM/DD.
+             * On les conserve comme date seule en YYYY-MM-DD :
+             * 2026/10/08 -> 2026-10-08.
              */
             publishedAt =
-                `${year}-${month}-${day}T12:00:00`;
+                `${year}-${month}-${day}`;
         }
 
         rows.push({
@@ -1179,11 +1216,656 @@ async function fetchSushiScan(item) {
 }
 
 
+
+// ============================================================
+// MangaFire
+// ============================================================
+
+/*
+ * MangaFire charge désormais sa liste de chapitres via son API
+ * /api/titles/{id}/chapters et protège les requêtes avec un VRF.
+ *
+ * Algorithme compatible avec l'implémentation actuelle de Haruneko:
+ * https://github.com/manga-download/haruneko
+ */
+
+const MANGAFIRE_VRF_STAGES = [
+    {
+        table:
+            'yINlmUNho8VYJT+ibTIP+9ESiULpVEtMOoD6U6lRE0R/xwXo/Xp9NrUgC4cw/' +
+            'Lmo33vUyjUE40kUoEWIr/fxfNNcq2s79ShQ5NhNrFnJ4hXPwOu/SuXzIbuTQKG' +
+            'Fvfm08E9jvCfqAtoDqvQq3dVWPQFmJjgvkISBeXY3BgANR+yVnjGbcxZ47d6k' +
+            'LNfZPIayTq3/YGySb1KuVZodWp/WGNAO5pfMcpaK53Hhs0allBszaMaxuouOwd' +
+            'xbwgxIw6YunSsXjI05Yi0j9j4eHKfSXR8Ifo/Od+8iamRfCXTyvm7NGRGYdcQ' +
+            '0ywcK/u6RXhrbcCm4t2eCtrDgQVecJGkQ+A==',
+
+        key:
+            '0Ec58JOY3uBzJK9m3zqIOpdlF7UFiax9DmA=',
+
+        iv:
+            0x5a
+    },
+    {
+        table:
+            'IUFltCxD3Oc2cwCgkJffthaOg9cgPUb0LgW6H/VtfcF0kc5F25t+aWj6JH9V' +
+            'OhOaY0rAFdUxlDnl5BLNvwEJvQtP5qcw7vdb/K+chnbwnspSHT8mz5lqwz41T' +
+            'ezG0hkO06FTjJZhsyNuFLDpD2ZZxQj/QIRcF90zpmQ7Byu483WsQqUE0C342H' +
+            'L+JXngRB6fRzxRyVTaKu83h7UYTJ0QMt6ixFh6S3F8gqkKwrGTL3jHNBsD45U' +
+            'nifK8+RGtishQV2K3rujLKEkiZxpr2dYcudFW4oFsDKhad3CLBvuyTqsCo4B7m' +
+            'L5IKQ1vXo/MOOvq1I1d8ar9X6Ttu5KF4fZgiA==',
+
+        key:
+            'AAdjb1iPY8CiDmq9H34tKTBF8a3oDQ==',
+
+        iv:
+            0x35
+    },
+    {
+        table:
+            'NQHlu1/wVO5EmkwQymF810qqY2xG1k2obcas4Z9mCsPEIFl9pRIjFxbJ7ybM' +
+            'HbBckT5Ton85E0FOeHezbh/mjlEYpmpnlXOS8dgrqeq2KfxImTh1YK9y0PeMN' +
+            'hzA1OQzSY9brYOJq/l2QnE/hwOeZIhPixVSKIUlDb5vLcH6RWKxkIEMuP0bDw' +
+            'IqQ71AJJaEaMJL7A6YtyIwoRT+L5v4aZzodN/0+3nOGsfblFjgxSfPzVDjNFe' +
+            'Nl5P26+kEC/8AHgdrpAbt3hHz3HrRN1Y6e+JHgF7ncFWnoF0y3THL1S71WgWG' +
+            'Ca6KtSzTCCG58n68nTyj2T3Sshk7utqCtMi/ZQ==',
+
+        key:
+            'DELOJgPsVaCcblDtTGMdHzM=',
+
+        iv:
+            0xba
+    }
+].map(
+    ({ table, key, iv }) => ({
+        table:
+            mangaFireBase64Bytes(
+                table
+            ),
+
+        key:
+            mangaFireBase64Bytes(
+                key
+            ),
+
+        iv
+    })
+);
+
+function mangaFireBase64Bytes(value) {
+    const binary =
+        atob(value);
+
+    const result =
+        new Uint8Array(
+            binary.length
+        );
+
+    for (
+        let i = 0;
+        i < binary.length;
+        i++
+    ) {
+        result[i] =
+            binary.charCodeAt(i);
+    }
+
+    return result;
+}
+
+function mangaFireUtf8Bytes(value) {
+    return new TextEncoder()
+        .encode(value);
+}
+
+function mangaFireUrlBase64(bytes) {
+    let binary = '';
+
+    for (const byte of bytes) {
+        binary +=
+            String.fromCharCode(
+                byte
+            );
+    }
+
+    return btoa(binary)
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+}
+
+function mangaFireEncryptStage(
+    data,
+    stage
+) {
+    const output =
+        new Uint8Array(
+            data.length
+        );
+
+    let previous =
+        stage.iv;
+
+    for (
+        let i = 0;
+        i < data.length;
+        i++
+    ) {
+        previous =
+            stage.table[
+                data[i] ^
+                stage.key[
+                    i %
+                    stage.key.length
+                ] ^
+                previous
+            ];
+
+        output[i] =
+            previous;
+    }
+
+    return output;
+}
+
+function mangaFireComputeVrf(url) {
+    const sorted =
+        new URL(url.toString());
+
+    sorted.searchParams.sort();
+
+    const pathAndQuery =
+        url.pathname.replace(
+            /^\/api\//,
+            '/'
+        ) +
+        sorted.search;
+
+    let data =
+        mangaFireUtf8Bytes(
+            pathAndQuery
+        );
+
+    for (
+        const stage of
+        MANGAFIRE_VRF_STAGES
+    ) {
+        data =
+            mangaFireEncryptStage(
+                data,
+                stage
+            );
+    }
+
+    return mangaFireUrlBase64(
+        data
+    );
+}
+
+async function mangaFireApi(
+    endpoint,
+    params = {}
+) {
+    const url =
+        new URL(
+            endpoint,
+            'https://mangafire.to/api/'
+        );
+
+    for (
+        const [key, value] of
+        Object.entries(params)
+    ) {
+        url.searchParams.set(
+            key,
+            String(value)
+        );
+    }
+
+    url.searchParams.set(
+        'vrf',
+        mangaFireComputeVrf(
+            url
+        )
+    );
+
+    const response =
+        await fetch(
+            url.toString(),
+            {
+                cache: 'no-store',
+                headers: {
+                    'Accept':
+                        'application/json,text/plain,*/*',
+
+                    'Accept-Language':
+                        'en-US,en;q=0.9',
+
+                    'Referer':
+                        'https://mangafire.to/'
+                }
+            }
+        );
+
+    if (!response.ok) {
+        throw new Error(
+            `MangaFire API HTTP ${response.status}`
+        );
+    }
+
+    const text =
+        await response.text();
+
+    let data;
+
+    try {
+        data =
+            JSON.parse(text);
+    } catch {
+        throw new Error(
+            'Réponse API MangaFire invalide'
+        );
+    }
+
+    return data;
+}
+
+function mangaFireIdFromUrl(url) {
+    const pathname =
+        new URL(url).pathname;
+
+    const match =
+        pathname.match(
+            /^\/title\/([^-\/]+)/i
+        );
+
+    if (!match?.[1]) {
+        throw new Error(
+            'Identifiant MangaFire introuvable'
+        );
+    }
+
+    return match[1];
+}
+
+function mangaFireRelativeAgeToIso(value) {
+    const match =
+        String(value || '')
+            .trim()
+            .match(
+                /^(\d+)\s*(mo|y|w|d|h|m)\s+ago$/i
+            );
+
+    if (!match) {
+        return '';
+    }
+
+    const amount =
+        Number(match[1]);
+
+    const unit =
+        match[2].toLowerCase();
+
+    if (
+        !Number.isFinite(amount) ||
+        amount < 0
+    ) {
+        return '';
+    }
+
+    const date =
+        new Date();
+
+    switch (unit) {
+        case 'm':
+            date.setMinutes(
+                date.getMinutes() - amount
+            );
+            break;
+
+        case 'h':
+            date.setHours(
+                date.getHours() - amount
+            );
+            break;
+
+        case 'd':
+            date.setDate(
+                date.getDate() - amount
+            );
+            break;
+
+        case 'w':
+            date.setDate(
+                date.getDate() - (amount * 7)
+            );
+            break;
+
+        case 'mo':
+            date.setMonth(
+                date.getMonth() - amount
+            );
+            break;
+
+        case 'y':
+            date.setFullYear(
+                date.getFullYear() - amount
+            );
+            break;
+
+        default:
+            return '';
+    }
+
+    return date.toISOString();
+}
+
+function mangaFireDateFromItem(item) {
+    const candidates = [
+        item?.publishedAt,
+        item?.published_at,
+        item?.createdAt,
+        item?.created_at,
+        item?.updatedAt,
+        item?.updated_at,
+        item?.date,
+        item?.date_upload,
+        item?.uploadedAt
+    ];
+
+    for (const value of candidates) {
+        if (
+            value === null ||
+            value === undefined ||
+            value === ''
+        ) {
+            continue;
+        }
+
+        /*
+         * MangaFire peut renvoyer un âge comme "5d ago".
+         */
+        if (
+            typeof value === 'string'
+        ) {
+            const relative =
+                mangaFireRelativeAgeToIso(
+                    value
+                );
+
+            if (relative) {
+                return relative;
+            }
+        }
+
+        /*
+         * Timestamp Unix :
+         * - 10 chiffres ~ secondes
+         * - 13 chiffres ~ millisecondes
+         *
+         * Le bug 21/01/1970 venait d'un timestamp en secondes
+         * directement passé à new Date().
+         */
+        const numeric =
+            typeof value === 'number' ||
+            /^\d+(?:\.\d+)?$/.test(
+                String(value).trim()
+            )
+                ? Number(value)
+                : NaN;
+
+        if (
+            Number.isFinite(numeric)
+        ) {
+            const milliseconds =
+                numeric < 1e12
+                    ? numeric * 1000
+                    : numeric;
+
+            const date =
+                new Date(
+                    milliseconds
+                );
+
+            if (
+                !Number.isNaN(
+                    date.getTime()
+                ) &&
+                date.getFullYear() >= 2000
+            ) {
+                return date.toISOString();
+            }
+
+            continue;
+        }
+
+        const date =
+            new Date(value);
+
+        if (
+            !Number.isNaN(
+                date.getTime()
+            ) &&
+            date.getFullYear() >= 2000
+        ) {
+            return date.toISOString();
+        }
+    }
+
+    return '';
+}
+
+async function fetchMangaFire(item) {
+    const mangaFireId =
+        mangaFireIdFromUrl(
+            item.url
+        );
+
+    /*
+     * L'API "titles/{id}" donne notamment le HID canonique et le titre.
+     */
+    const detail =
+        await mangaFireApi(
+            `titles/${mangaFireId}`
+        );
+
+    const mangaData =
+        detail?.data ||
+        {};
+
+    const hid =
+        mangaData.hid ||
+        mangaFireId;
+
+    /*
+     * On demande directement les chapitres triés par numéro décroissant.
+     * limit=200 est suffisant pour déterminer le plus grand chapitre,
+     * mais on vérifie quand même toutes les entrées reçues.
+     */
+    const chapterData =
+        await mangaFireApi(
+            `titles/${hid}/chapters`,
+            {
+                sort: 'number',
+                order: 'desc',
+                page: 1,
+                limit: 200
+            }
+        );
+
+    const items =
+        Array.isArray(
+            chapterData?.items
+        )
+            ? chapterData.items
+            : [];
+
+    const chapters =
+        items
+            .map(
+                (row) => ({
+                    row,
+                    number:
+                        Number(
+                            row?.number
+                        )
+                })
+            )
+            .filter(
+                (entry) =>
+                    Number.isFinite(
+                        entry.number
+                    )
+            );
+
+    if (!chapters.length) {
+        throw new Error(
+            'Aucun chapitre détecté sur MangaFire'
+        );
+    }
+
+    const latest =
+        chapters.reduce(
+            (current, candidate) =>
+                candidate.number >
+                current.number
+                    ? candidate
+                    : current
+        );
+
+    /*
+     * Le HTML normal reste utile pour la couverture.
+     * Le chapitre, lui, vient de l'API signée.
+     */
+    let html = '';
+
+    try {
+        const pageResponse =
+            await fetch(
+                item.url,
+                {
+                    cache:
+                        'no-store',
+
+                    headers: {
+                        'Accept-Language':
+                            'en-US,en;q=0.9'
+                    }
+                }
+            );
+
+        if (pageResponse.ok) {
+            html =
+                await pageResponse.text();
+        }
+    } catch {
+        html = '';
+    }
+
+    const htmlTitle =
+        html.match(
+            /<h1[^>]*>([\s\S]*?)<\/h1>/i
+        ) ||
+        html.match(
+            /<title[^>]*>([\s\S]*?)<\/title>/i
+        );
+
+    let title =
+        cleanText(
+            mangaData.title ||
+            (
+                htmlTitle
+                    ? stripHtml(
+                        htmlTitle[1]
+                    )
+                    : ''
+            ) ||
+            slugTitle(
+                item.url
+            ),
+            MAX_TITLE_LENGTH
+        );
+
+    title =
+        title.replace(
+            /\s*[-|]\s*MangaFire.*$/i,
+            ''
+        ).trim();
+
+    /*
+     * Les détails MangaFire contiennent la couverture dans poster.
+     * On la préfère au DOM, car la page peut être rendue côté client.
+     */
+    const apiCoverUrl =
+        mangaData?.poster?.large ||
+        mangaData?.poster?.medium ||
+        mangaData?.poster?.small ||
+        mangaData?.poster?.url ||
+        '';
+
+    const htmlCoverUrl =
+        html
+            ? (
+                extractImageFromClass(
+                    html,
+                    'title-detail_poster-col',
+                    item.url
+                ) ||
+                extractMetaImageUrl(
+                    html,
+                    item.url
+                )
+            )
+            : '';
+
+    const coverUrl =
+        absoluteImageUrl(
+            apiCoverUrl ||
+            htmlCoverUrl,
+            item.url
+        );
+
+    return {
+        chapter:
+            String(
+                latest.number
+            ),
+
+        sortKey:
+            latest.number,
+
+        title,
+
+        coverUrl,
+
+        publishedAt:
+            mangaFireDateFromItem(
+                latest.row
+            ),
+
+        publishedAgo:
+            '',
+
+        chapterId:
+            String(
+                latest.row?.id ||
+                latest.number
+            )
+    };
+}
+
+
 // ============================================================
 // Sélection de la source
 // ============================================================
 
-const SITE_FETCHERS = { mgeko: fetchMgeko, mangadex: fetchMangaDex, mangafreak: fetchMangaFreak, sushiscan: fetchSushiScan, webtoon: fetchWebtoon };
+const SITE_FETCHERS = {
+    mgeko: fetchMgeko,
+    mangadex: fetchMangaDex,
+    mangafreak: fetchMangaFreak,
+    mangafire: fetchMangaFire,
+    sushiscan: fetchSushiScan,
+    webtoon: fetchWebtoon
+};
 async function fetchInfo(item) { const fetcher = SITE_FETCHERS[item.site]; if (!fetcher) throw new Error(`Site non supporté : ${item.site}`); return fetcher(item); }
 
 
@@ -1207,6 +1889,57 @@ function assertImportSize(text) {
         );
     }
 }
+
+function sleep(ms) {
+    return new Promise(
+        (resolve) =>
+            setTimeout(resolve, ms)
+    );
+}
+
+function isTransientNetworkError(error) {
+    const message =
+        String(
+            error?.message ||
+            error ||
+            ''
+        ).toLowerCase();
+
+    return (
+        message.includes('failed to fetch') ||
+        message.includes('networkerror') ||
+        message.includes('network error') ||
+        message.includes('load failed') ||
+        message.includes('internet disconnected') ||
+        message.includes('name_not_resolved') ||
+        message.includes('timed out') ||
+        message.includes('timeout') ||
+        /http\s+(408|425|429|500|502|503|504)\b/.test(
+            message
+        )
+    );
+}
+
+async function fetchInfoWithRetry(item) {
+    try {
+        return await fetchInfo(item);
+    } catch (firstError) {
+        if (
+            !isTransientNetworkError(
+                firstError
+            )
+        ) {
+            throw firstError;
+        }
+
+        await sleep(
+            FETCH_RETRY_DELAY_MS
+        );
+
+        return fetchInfo(item);
+    }
+}
+
 
 function cleanText(
     value,
@@ -1957,7 +2690,7 @@ async function checkOne(item, { notify = true, archive = null } = {}) {
                     item.webtoonId = normalized.webtoonId;
         }
 
-        const info = await fetchInfo(item);
+        const info = await fetchInfoWithRetry(item);
 
         const initialized =
             item.lastSeenChapter != null;
@@ -2044,12 +2777,16 @@ async function checkOne(item, { notify = true, archive = null } = {}) {
         };
     } catch (error) {
         item.lastCheck = now;
-        item.lastError = String(
-            error.message || error
-        );
+
+        item.lastError =
+            String(
+                error?.message ||
+                error
+            );
 
         return {
-            error: item.lastError
+            error:
+                item.lastError
         };
     }
 }
@@ -2231,10 +2968,34 @@ chrome.runtime.onStartup.addListener(
 );
 
 chrome.alarms.onAlarm.addListener(
-    (alarm) => {
-        if (alarm.name === CHECK_ALARM) {
-            checkAll();
+    async (alarm) => {
+        if (alarm.name !== CHECK_ALARM) {
+            return;
         }
+
+        /*
+         * Quand le PC sort de veille, Chrome peut déclencher
+         * immédiatement une alarme qui aurait dû sonner pendant
+         * la veille. À cet instant le Wi-Fi/DNS n'est pas toujours
+         * encore disponible.
+         */
+        const lateness =
+            Date.now() -
+            Number(
+                alarm.scheduledTime ||
+                Date.now()
+            );
+
+        if (
+            lateness >
+            WAKE_ALARM_LATE_MS
+        ) {
+            await sleep(
+                WAKE_NETWORK_GRACE_MS
+            );
+        }
+
+        await checkAll();
     }
 );
 

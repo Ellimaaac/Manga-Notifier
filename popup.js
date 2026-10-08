@@ -115,14 +115,25 @@ function formatDateOnly(timestamp) {
         return '—';
     }
 
-    return new Intl.DateTimeFormat(
-        getDateLocale(),
-        {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit'
-        }
-    ).format(date);
+    const day =
+        String(
+            date.getDate()
+        ).padStart(2, '0');
+
+    const month =
+        String(
+            date.getMonth() + 1
+        ).padStart(2, '0');
+
+    const year =
+        date.getFullYear();
+
+    /*
+     * Dates de publication :
+     * affichage non ambigu en JJ/MM/AAAA,
+     * indépendamment de la langue de l'interface.
+     */
+    return `${day}/${month}/${year}`;
 }
 
 function formatDate(timestamp) {
@@ -337,6 +348,9 @@ function getSiteName(site) {
 
         case 'mangafreak':
             return 'MangaFreak';
+
+        case 'mangafire':
+            return 'MangaFire';
 
         case 'webtoon':
             return 'WEBTOON';

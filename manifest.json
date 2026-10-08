@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Manga Notifier",
-  "version": "4.2.19",
+  "version": "1.0.5",
   "description": "Tracks manga and webtoon updates and notifies you when a new chapter is available.",
   "permissions": [
     "alarms",
@@ -22,7 +22,10 @@
     "https://www.sushiscan.net/*",
     "https://uploads.mangadex.org/*",
     "https://images.mangafreak.me/*",
-    "https://webtoon-phinf.pstatic.net/*"
+    "https://webtoon-phinf.pstatic.net/*",
+    "https://mangafire.to/*",
+    "https://www.mangafire.to/*",
+    "https://static.mfcdn.nl/*"
   ],
   "background": {
     "service_worker": "background.js"
