@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Manga Notifier",
-  "version": "1.0.5",
+  "version": "1.0.13",
   "description": "Tracks manga and webtoon updates and notifies you when a new chapter is available.",
   "permissions": [
     "alarms",
     "notifications",
-    "storage"
+    "storage",
+    "scripting"
   ],
   "host_permissions": [
     "https://www.mgeko.cc/*",
@@ -25,7 +26,14 @@
     "https://webtoon-phinf.pstatic.net/*",
     "https://mangafire.to/*",
     "https://www.mangafire.to/*",
-    "https://static.mfcdn.nl/*"
+    "https://static.mfcdn.nl/*",
+    "https://comix.to/*",
+    "https://www.comix.to/*",
+    "https://static.comix.to/*",
+    "https://vortexscans.org/*",
+    "https://www.vortexscans.org/*",
+    "https://i0.wp.com/*",
+    "https://storage.vortexscans.org/*"
   ],
   "background": {
     "service_worker": "background.js"

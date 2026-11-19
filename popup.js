@@ -352,6 +352,12 @@ function getSiteName(site) {
         case 'mangafire':
             return 'MangaFire';
 
+        case 'comix':
+            return 'Comix';
+
+        case 'vortexscans':
+            return 'Vortex Scans';
+
         case 'webtoon':
             return 'WEBTOON';
 

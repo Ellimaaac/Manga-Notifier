@@ -24,7 +24,12 @@ const SAFE_COVER_HOSTS = new Set([
     'webtoon-phinf.pstatic.net',
     'sushiscan.net',
     'www.sushiscan.net',
-    'static.mfcdn.nl'
+    'static.mfcdn.nl',
+    'static.comix.to',
+    'comix.to',
+    'www.comix.to',
+    'i0.wp.com',
+    'storage.vortexscans.org'
 ]);
 
 
@@ -208,6 +213,71 @@ function normalizeUrl(raw) {
     }
 
 
+
+    // Comix
+    if (
+        [
+            'comix.to',
+            'www.comix.to'
+        ].includes(url.hostname)
+    ) {
+        url.search = '';
+
+        const match =
+            url.pathname.match(
+                /^\/title\/([^/?#]+)\/?$/i
+            );
+
+        if (!match) {
+            throw new Error(
+                'Utilise une URL Comix de titre'
+            );
+        }
+
+        url.hostname =
+            'comix.to';
+
+        url.pathname =
+            `/title/${match[1]}`;
+
+        return {
+            url: url.toString(),
+            site: 'comix'
+        };
+    }
+
+
+
+    // Vortex Scans
+    if (
+        [
+            'vortexscans.org',
+            'www.vortexscans.org'
+        ].includes(url.hostname)
+    ) {
+        url.search = '';
+
+        const match =
+            url.pathname.match(
+                /^\/series\/([^/?#]+)\/?$/i
+            );
+
+        if (!match) {
+            throw new Error(
+                'Utilise une URL Vortex Scans de série'
+            );
+        }
+
+        url.hostname = 'vortexscans.org';
+        url.pathname = `/series/${match[1]}`;
+
+        return {
+            url: url.toString(),
+            site: 'vortexscans'
+        };
+    }
+
+
     // WEBTOON
     if (
         [
@@ -241,7 +311,7 @@ function normalizeUrl(raw) {
     }
 
     throw new Error(
-        'Site accepté : Mgeko, MangaDex, MangaFreak, MangaFire, SushiScan ou WEBTOON'
+        'Site accepté : Mgeko, MangaDex, MangaFreak, MangaFire, Comix, Vortex Scans, SushiScan ou WEBTOON'
     );
 }
 
@@ -425,7 +495,151 @@ function extractMgeko(html, url) {
         ? stripHtml(titleMatch[1]).replace(/\s*[-|].*$/, '').trim()
         : slugTitle(url);
 
+    /*
+     * Couverture Vortex :
+     *
+     * 1. priorité au JSON d'hydratation #syncData ;
+     * 2. fallback sur le <img> / srcset rendu ;
+     * 3. dernier recours : og:image.
+     *
+     * Le service worker ne reçoit pas toujours exactement le même DOM
+     * que celui visible dans DevTools, d'où le fallback syncData.
+     */
+    function findVortexCoverInValue(value) {
+        if (
+            typeof value === 'string'
+        ) {
+            const decoded =
+                value.replace(
+                    /\\u002F/g,
+                    '/'
+                );
+
+            const urlMatch =
+                decoded.match(
+                    /https?:\/\/(?:i0\.wp\.com\/)?storage\.vortexscans\.org\/[^"'\\\s]+/i
+                );
+
+            return urlMatch?.[0] || '';
+        }
+
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const found =
+                    findVortexCoverInValue(
+                        item
+                    );
+
+                if (found) {
+                    return found;
+                }
+            }
+
+            return '';
+        }
+
+        if (
+            value &&
+            typeof value === 'object'
+        ) {
+            for (
+                const [key, child] of
+                Object.entries(value)
+            ) {
+                /*
+                 * On privilégie les champs qui ressemblent à une image
+                 * de série pour éviter de prendre une miniature de chapitre.
+                 */
+                if (
+                    /cover|poster|image|thumbnail|featured/i.test(
+                        key
+                    )
+                ) {
+                    const preferred =
+                        findVortexCoverInValue(
+                            child
+                        );
+
+                    if (preferred) {
+                        return preferred;
+                    }
+                }
+            }
+
+            for (
+                const child of
+                Object.values(value)
+            ) {
+                const found =
+                    findVortexCoverInValue(
+                        child
+                    );
+
+                if (found) {
+                    return found;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    let vortexCoverUrl = '';
+
+    const syncDataMatch =
+        html.match(
+            /<script\b[^>]*id=["']syncData["'][^>]*>([\s\S]*?)<\/script>/i
+        );
+
+    if (syncDataMatch?.[1]) {
+        try {
+            const syncData =
+                JSON.parse(
+                    syncDataMatch[1].trim()
+                );
+
+            vortexCoverUrl =
+                findVortexCoverInValue(
+                    syncData
+                );
+        } catch {
+            vortexCoverUrl = '';
+        }
+    }
+
+    if (!vortexCoverUrl) {
+        const vortexCoverMatch =
+            html.match(
+                /<img\b[^>]*(?:src|srcset)=["']([^"']*(?:i0\.wp\.com\/storage\.vortexscans\.org|storage\.vortexscans\.org)[^"']*)["'][^>]*>/i
+            );
+
+        if (vortexCoverMatch?.[1]) {
+            vortexCoverUrl =
+                vortexCoverMatch[1]
+                    .split(',')[0]
+                    .trim()
+                    .split(/\s+/)[0]
+                    .replace(
+                        /&amp;/g,
+                        '&'
+                    );
+        }
+    }
+
+    if (vortexCoverUrl) {
+        try {
+            vortexCoverUrl =
+                new URL(
+                    vortexCoverUrl,
+                    url
+                ).toString();
+        } catch {
+            vortexCoverUrl = '';
+        }
+    }
+
     const coverUrl =
+        vortexCoverUrl ||
         extractMetaImageUrl(
             html,
             url
@@ -1854,6 +2068,1010 @@ async function fetchMangaFire(item) {
 }
 
 
+
+// ============================================================
+// Comix
+// ============================================================
+
+function normalizeComixAge(value) {
+    const match =
+        String(value || '')
+            .trim()
+            .match(
+                /^(\d+)\s*(mo|mos|month|months|w|wk|wks|week|weeks|d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\s+ago$/i
+            );
+
+    if (!match) {
+        return '';
+    }
+
+    const amount =
+        Number(match[1]);
+
+    const unit =
+        match[2].toLowerCase();
+
+    if (!Number.isFinite(amount)) {
+        return '';
+    }
+
+    if (
+        unit === 'mo' ||
+        unit === 'mos' ||
+        unit.startsWith('month')
+    ) {
+        return amount === 1
+            ? '1 month'
+            : `${amount} months`;
+    }
+
+    if (
+        unit === 'w' ||
+        unit === 'wk' ||
+        unit === 'wks' ||
+        unit.startsWith('week')
+    ) {
+        return amount === 1
+            ? '1 week'
+            : `${amount} weeks`;
+    }
+
+    if (
+        unit === 'd' ||
+        unit.startsWith('day')
+    ) {
+        return amount === 1
+            ? '1 day'
+            : `${amount} days`;
+    }
+
+    if (
+        unit === 'h' ||
+        unit === 'hr' ||
+        unit === 'hrs' ||
+        unit.startsWith('hour')
+    ) {
+        return amount === 1
+            ? '1 hour'
+            : `${amount} hours`;
+    }
+
+    return amount === 1
+        ? '1 minute'
+        : `${amount} minutes`;
+}
+
+function extractComixRows(html) {
+    const rows = [];
+
+    const itemRegex =
+        /<li\b[^>]*class=["'][^"']*\bmchap-item\b[^"']*["'][^>]*>/gi;
+
+    const starts =
+        [...html.matchAll(itemRegex)];
+
+    for (
+        let i = 0;
+        i < starts.length;
+        i++
+    ) {
+        const start =
+            starts[i].index ?? 0;
+
+        const nextStart =
+            i + 1 < starts.length
+                ? starts[i + 1].index
+                : html.length;
+
+        const close =
+            html.indexOf(
+                '</li>',
+                start
+            );
+
+        const end =
+            close >= 0 &&
+            close < nextStart
+                ? close + 5
+                : nextStart;
+
+        const rowHtml =
+            html.slice(
+                start,
+                end
+            );
+
+        const rowText =
+            stripHtml(
+                rowHtml
+            );
+
+        const chapterMatch =
+            rowText.match(
+                /\bCh\.\s*(\d+(?:\.\d+)?)\b/i
+            );
+
+        if (!chapterMatch) {
+            continue;
+        }
+
+        const chapter =
+            chapterMatch[1];
+
+        const n =
+            Number(chapter);
+
+        if (!Number.isFinite(n)) {
+            continue;
+        }
+
+        const ageMatch =
+            rowText.match(
+                /\b(\d+)\s*(mo|mos|month|months|w|wk|wks|week|weeks|d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\s+ago\b/i
+            );
+
+        rows.push({
+            chapter,
+            n,
+            publishedAgo:
+                ageMatch
+                    ? normalizeComixAge(
+                        `${ageMatch[1]}${ageMatch[2]} ago`
+                    )
+                    : ''
+        });
+    }
+
+    return rows;
+}
+
+function extractComixRowsFallback(html) {
+    const text =
+        stripHtml(html);
+
+    const rows = [];
+
+    const chapterRegex =
+        /\bCh\.\s*(\d+(?:\.\d+)?)\b/gi;
+
+    for (
+        const match of
+        text.matchAll(chapterRegex)
+    ) {
+        const chapter =
+            match[1];
+
+        const n =
+            Number(chapter);
+
+        if (!Number.isFinite(n)) {
+            continue;
+        }
+
+        const start =
+            match.index || 0;
+
+        const nearby =
+            text.slice(
+                start,
+                start + 260
+            );
+
+        const ageMatch =
+            nearby.match(
+                /\b(\d+)\s*(mo|mos|month|months|w|wk|wks|week|weeks|d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\s+ago\b/i
+            );
+
+        rows.push({
+            chapter,
+            n,
+            publishedAgo:
+                ageMatch
+                    ? normalizeComixAge(
+                        `${ageMatch[1]}${ageMatch[2]} ago`
+                    )
+                    : ''
+        });
+    }
+
+    return rows;
+}
+
+function extractComix(html, url) {
+    const titleMatch =
+        html.match(
+            /<h1[^>]*>([\s\S]*?)<\/h1>/i
+        ) ||
+        html.match(
+            /<title[^>]*>([\s\S]*?)<\/title>/i
+        );
+
+    let title =
+        titleMatch
+            ? stripHtml(
+                titleMatch[1]
+            )
+            : slugTitle(url);
+
+    title =
+        title
+            .replace(
+                /\s*[-|]\s*Comix.*$/i,
+                ''
+            )
+            .trim();
+
+    let rows =
+        extractComixRows(
+            html
+        );
+
+    if (!rows.length) {
+        rows =
+            extractComixRowsFallback(
+                html
+            );
+    }
+
+    if (!rows.length) {
+        throw new Error(
+            'Aucun chapitre détecté sur Comix'
+        );
+    }
+
+    const maxNumber =
+        Math.max(
+            ...rows.map(
+                (row) => row.n
+            )
+        );
+
+    const latestCandidates =
+        rows.filter(
+            (row) =>
+                row.n ===
+                maxNumber
+        );
+
+    const latest =
+        latestCandidates.find(
+            (row) =>
+                row.publishedAgo
+        ) ||
+        latestCandidates[0];
+
+    const coverUrl =
+        extractImageFromClass(
+            html,
+            'mpage__poster',
+            url
+        ) ||
+        extractMetaImageUrl(
+            html,
+            url
+        );
+
+    return {
+        chapter:
+            latest.chapter,
+
+        sortKey:
+            latest.n,
+
+        title:
+            title ||
+            slugTitle(url),
+
+        coverUrl,
+
+        publishedAt:
+            '',
+
+        publishedAgo:
+            latest.publishedAgo,
+
+        chapterId:
+            String(
+                latest.chapter
+            )
+    };
+}
+
+async function fetchComixRendered(item) {
+    let tabId = null;
+
+    try {
+        const tab =
+            await chrome.tabs.create({
+                url: item.url,
+                active: false
+            });
+
+        tabId =
+            tab.id;
+
+        if (!tabId) {
+            throw new Error(
+                'Impossible d’ouvrir Comix en arrière-plan'
+            );
+        }
+
+        const deadline =
+            Date.now() + 20000;
+
+        while (
+            Date.now() <
+            deadline
+        ) {
+            await sleep(900);
+
+            let injection;
+
+            try {
+                injection =
+                    await chrome.scripting.executeScript({
+                        target: {
+                            tabId
+                        },
+
+                        func: () => {
+                            const items =
+                                [
+                                    ...document.querySelectorAll(
+                                        '.mchap-item'
+                                    )
+                                ];
+
+                            const rows =
+                                items
+                                    .map(
+                                        (node) => {
+                                            const text =
+                                                (
+                                                    node.textContent ||
+                                                    ''
+                                                )
+                                                    .replace(
+                                                        /\s+/g,
+                                                        ' '
+                                                    )
+                                                    .trim();
+
+                                            const chapterMatch =
+                                                text.match(
+                                                    /\bCh\.\s*(\d+(?:\.\d+)?)\b/i
+                                                );
+
+                                            if (!chapterMatch) {
+                                                return null;
+                                            }
+
+                                            const ageMatch =
+                                                text.match(
+                                                    /\b(\d+)\s*(mo|mos|month|months|w|wk|wks|week|weeks|d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\s+ago\b/i
+                                                );
+
+                                            return {
+                                                chapter:
+                                                    chapterMatch[1],
+
+                                                publishedAgo:
+                                                    ageMatch
+                                                        ? ageMatch[0]
+                                                        : ''
+                                            };
+                                        }
+                                    )
+                                    .filter(Boolean);
+
+                            const title =
+                                (
+                                    document.querySelector(
+                                        'h1'
+                                    )?.textContent ||
+                                    document.title ||
+                                    ''
+                                )
+                                    .replace(
+                                        /\s+/g,
+                                        ' '
+                                    )
+                                    .trim();
+
+                            const cover =
+                                document.querySelector(
+                                    '.mpage__poster img'
+                                );
+
+                            const coverUrl =
+                                cover?.currentSrc ||
+                                cover?.src ||
+                                '';
+
+                            return {
+                                rows,
+                                title,
+                                coverUrl,
+                                readyState:
+                                    document.readyState
+                            };
+                        }
+                    });
+            } catch {
+                injection = null;
+            }
+
+            const rendered =
+                injection?.[0]?.result;
+
+            if (
+                !rendered ||
+                !Array.isArray(
+                    rendered.rows
+                ) ||
+                !rendered.rows.length
+            ) {
+                continue;
+            }
+
+            const rows =
+                rendered.rows
+                    .map(
+                        (row) => {
+                            const chapter =
+                                String(
+                                    row.chapter ||
+                                    ''
+                                );
+
+                            const n =
+                                Number(chapter);
+
+                            return {
+                                chapter,
+                                n,
+                                publishedAgo:
+                                    normalizeComixAge(
+                                        row.publishedAgo
+                                    )
+                            };
+                        }
+                    )
+                    .filter(
+                        (row) =>
+                            Number.isFinite(
+                                row.n
+                            )
+                    );
+
+            if (!rows.length) {
+                continue;
+            }
+
+            const maxNumber =
+                Math.max(
+                    ...rows.map(
+                        (row) =>
+                            row.n
+                    )
+                );
+
+            const latestCandidates =
+                rows.filter(
+                    (row) =>
+                        row.n ===
+                        maxNumber
+                );
+
+            const latest =
+                latestCandidates.find(
+                    (row) =>
+                        row.publishedAgo
+                ) ||
+                latestCandidates[0];
+
+            return {
+                chapter:
+                    latest.chapter,
+
+                sortKey:
+                    latest.n,
+
+                title:
+                    cleanText(
+                        rendered.title ||
+                        slugTitle(
+                            item.url
+                        ),
+                        MAX_TITLE_LENGTH
+                    )
+                        .replace(
+                            /\s*[-|]\s*Comix.*$/i,
+                            ''
+                        )
+                        .trim(),
+
+                coverUrl:
+                    rendered.coverUrl
+                        ? absoluteImageUrl(
+                            rendered.coverUrl,
+                            item.url
+                        )
+                        : '',
+
+                publishedAt:
+                    '',
+
+                publishedAgo:
+                    latest.publishedAgo,
+
+                chapterId:
+                    String(
+                        latest.chapter
+                    )
+            };
+        }
+
+        throw new Error(
+            'Comix n’a pas chargé sa liste de chapitres à temps'
+        );
+    } finally {
+        if (tabId) {
+            try {
+                await chrome.tabs.remove(
+                    tabId
+                );
+            } catch {
+                // L’onglet a déjà pu être fermé par Chrome.
+            }
+        }
+    }
+}
+
+async function fetchComix(item) {
+    /*
+     * Premier essai : HTML brut, rapide et invisible.
+     * Certains titres Comix rendent encore suffisamment de données
+     * pour que ce chemin fonctionne.
+     */
+    try {
+        const response =
+            await fetch(
+                item.url,
+                {
+                    cache: 'no-store',
+                    headers: {
+                        'Accept':
+                            'text/html,application/xhtml+xml,*/*;q=0.8',
+
+                        'Accept-Language':
+                            'en-US,en;q=0.9'
+                    }
+                }
+            );
+
+        if (response.ok) {
+            const html =
+                await response.text();
+
+            try {
+                return extractComix(
+                    html,
+                    item.url
+                );
+            } catch (error) {
+                if (
+                    !String(
+                        error?.message ||
+                        error
+                    ).includes(
+                        'Aucun chapitre détecté'
+                    )
+                ) {
+                    throw error;
+                }
+            }
+        }
+    } catch (error) {
+        /*
+         * Une réponse HTTP/Cloudflare ou un HTML incomplet peut
+         * être résolu par le navigateur réel ci-dessous.
+         */
+        if (
+            !isTransientNetworkError(
+                error
+            ) &&
+            !String(
+                error?.message ||
+                error
+            ).includes(
+                'Aucun chapitre détecté'
+            )
+        ) {
+            // On tente quand même le rendu réel : Comix est très dynamique.
+        }
+    }
+
+    /*
+     * Fallback fiable :
+     * Comix charge désormais ses chapitres via son frontend/API protégée.
+     * On laisse donc la vraie page Chrome charger les .mchap-item,
+     * puis on lit uniquement les données nécessaires.
+     */
+    return fetchComixRendered(
+        item
+    );
+}
+
+
+
+// ============================================================
+// Vortex Scans
+// ============================================================
+
+function normalizeVortexAge(value) {
+    const cleaned =
+        String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/^about\s+/, '')
+            .replace(/\s+ago$/, '');
+
+    const match =
+        cleaned.match(
+            /^(\d+)\s*(minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)$/
+        );
+
+    return match
+        ? `${Number(match[1])} ${match[2]}`
+        : '';
+}
+
+function extractVortexRows(html) {
+    const rows = [];
+
+    const hrefRegex =
+        /href=(["'])(.*?)\1/gi;
+
+    const hrefMatches =
+        [...html.matchAll(hrefRegex)];
+
+    const chapterLinks = [];
+
+    for (const match of hrefMatches) {
+        const href =
+            match[2];
+
+        const chapterMatch =
+            href.match(
+                /\/chapter-(\d+(?:\.\d+)?)(?:[/?#]|$)/i
+            );
+
+        if (!chapterMatch) {
+            continue;
+        }
+
+        chapterLinks.push({
+            index: match.index || 0,
+            href,
+            chapter: chapterMatch[1]
+        });
+    }
+
+    for (
+        let i = 0;
+        i < chapterLinks.length;
+        i++
+    ) {
+        const current =
+            chapterLinks[i];
+
+        const n =
+            Number(current.chapter);
+
+        if (!Number.isFinite(n)) {
+            continue;
+        }
+
+        const start =
+            current.index;
+
+        const nextStart =
+            i + 1 < chapterLinks.length
+                ? chapterLinks[i + 1].index
+                : Math.min(
+                    html.length,
+                    start + 5000
+                );
+
+        const text =
+            stripHtml(
+                html.slice(
+                    start,
+                    nextStart
+                )
+            );
+
+        const ageMatch =
+            text.match(
+                /\b(?:about\s+)?\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)(?:\s+ago)?\b/i
+            );
+
+        rows.push({
+            chapter: current.chapter,
+            n,
+            publishedAgo:
+                ageMatch
+                    ? normalizeVortexAge(
+                        ageMatch[0]
+                    )
+                    : ''
+        });
+    }
+
+    return rows;
+}
+
+function extractVortex(html, url) {
+    const titleMatch =
+        html.match(
+            /<h1[^>]*>([\s\S]*?)<\/h1>/i
+        ) ||
+        html.match(
+            /<title[^>]*>([\s\S]*?)<\/title>/i
+        );
+
+    const title =
+        titleMatch
+            ? stripHtml(
+                titleMatch[1]
+            )
+                .replace(
+                    /\s*[-|]\s*Vortex Scans.*$/i,
+                    ''
+                )
+                .trim()
+            : slugTitle(url);
+
+    let rows =
+        extractVortexRows(
+            html
+        );
+
+    if (!rows.length) {
+        const text =
+            stripHtml(html);
+
+        rows =
+            [...text.matchAll(
+                /\bChapter\s+(\d+(?:\.\d+)?)\b/gi
+            )]
+                .map(
+                    (match) => {
+                        const chapter =
+                            match[1];
+
+                        const n =
+                            Number(chapter);
+
+                        const nearby =
+                            text.slice(
+                                match.index || 0,
+                                (match.index || 0) + 220
+                            );
+
+                        const ageMatch =
+                            nearby.match(
+                                /\b(?:about\s+)?\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)(?:\s+ago)?\b/i
+                            );
+
+                        return {
+                            chapter,
+                            n,
+                            publishedAgo:
+                                ageMatch
+                                    ? normalizeVortexAge(
+                                        ageMatch[0]
+                                    )
+                                    : ''
+                        };
+                    }
+                )
+                .filter(
+                    (row) =>
+                        Number.isFinite(
+                            row.n
+                        )
+                );
+    }
+
+    if (!rows.length) {
+        throw new Error(
+            'Aucun chapitre détecté sur Vortex Scans'
+        );
+    }
+
+    const maxNumber =
+        Math.max(
+            ...rows.map(
+                (row) => row.n
+            )
+        );
+
+    const latest =
+        rows.find(
+            (row) =>
+                row.n === maxNumber
+        );
+
+    let publishedAgo =
+        latest.publishedAgo;
+
+    if (!publishedAgo) {
+        const pageText =
+            stripHtml(html);
+
+        const lastUpdateMatch =
+            pageText.match(
+                /\bLast update\s+((?:about\s+)?\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)(?:\s+ago)?)/i
+            );
+
+        if (lastUpdateMatch?.[1]) {
+            publishedAgo =
+                normalizeVortexAge(
+                    lastUpdateMatch[1]
+                );
+        }
+    }
+
+    function extractVortexCoverUrl(
+        source,
+        baseUrl
+    ) {
+        /*
+         * Le HTML reçu par le service worker peut différer du DOM
+         * visible dans DevTools. On cherche donc directement toutes
+         * les URL storage.vortexscans.org dans la réponse brute.
+         *
+         * Exemple réel :
+         * https://i0.wp.com/storage.vortexscans.org/upload/series/featured/...
+         */
+        const decoded =
+            String(source || '')
+                .replace(
+                    /\\u002f/gi,
+                    '/'
+                )
+                .replace(
+                    /\\\//g,
+                    '/'
+                )
+                .replace(
+                    /&amp;/gi,
+                    '&'
+                );
+
+        const matches =
+            decoded.match(
+                /https?:\/\/(?:i0\.wp\.com\/)?storage\.vortexscans\.org\/[^\s"'<>\\]+/gi
+            ) || [];
+
+        if (matches.length) {
+            const unique =
+                [...new Set(matches)];
+
+            /*
+             * On privilégie la couverture de série et non
+             * les miniatures des chapitres/recommandations.
+             */
+            unique.sort(
+                (a, b) => {
+                    const score =
+                        (value) => {
+                            let result = 0;
+
+                            if (
+                                /\/series\/featured\//i.test(
+                                    value
+                                )
+                            ) {
+                                result += 100;
+                            }
+
+                            if (
+                                /\/upload\/series\//i.test(
+                                    value
+                                )
+                            ) {
+                                result += 20;
+                            }
+
+                            if (
+                                /resize=\d+/i.test(
+                                    value
+                                )
+                            ) {
+                                result += 5;
+                            }
+
+                            return result;
+                        };
+
+                    return (
+                        score(b) -
+                        score(a)
+                    );
+                }
+            );
+
+            try {
+                return new URL(
+                    unique[0],
+                    baseUrl
+                ).toString();
+            } catch {
+                // Fallback ci-dessous.
+            }
+        }
+
+        return (
+            extractMetaImageUrl(
+                source,
+                baseUrl
+            ) ||
+            ''
+        );
+    }
+
+    const coverUrl =
+        extractVortexCoverUrl(
+            html,
+            url
+        );
+
+    return {
+        chapter: latest.chapter,
+        sortKey: latest.n,
+        title: title || slugTitle(url),
+        coverUrl,
+        publishedAt: '',
+        publishedAgo,
+        chapterId: String(latest.chapter)
+    };
+}
+
+async function fetchVortexScans(item) {
+    const response =
+        await fetch(
+            item.url,
+            {
+                cache: 'no-store',
+                headers: {
+                    'Accept':
+                        'text/html,application/xhtml+xml,*/*;q=0.8',
+
+                    'Accept-Language':
+                        'en-US,en;q=0.9'
+                }
+            }
+        );
+
+    if (!response.ok) {
+        throw new Error(
+            `Vortex Scans HTTP ${response.status}`
+        );
+    }
+
+    const html =
+        await response.text();
+
+    return extractVortex(
+        html,
+        item.url
+    );
+}
+
+
 // ============================================================
 // Sélection de la source
 // ============================================================
@@ -1863,6 +3081,8 @@ const SITE_FETCHERS = {
     mangadex: fetchMangaDex,
     mangafreak: fetchMangaFreak,
     mangafire: fetchMangaFire,
+    comix: fetchComix,
+    vortexscans: fetchVortexScans,
     sushiscan: fetchSushiScan,
     webtoon: fetchWebtoon
 };
@@ -2705,7 +3925,9 @@ async function checkOne(item, { notify = true, archive = null } = {}) {
                 item.title,
 
             coverUrl:
-                info.coverUrl ||
+                sanitizeCoverUrl(
+                    info.coverUrl
+                ) ||
                 item.coverUrl ||
                 '',
 
