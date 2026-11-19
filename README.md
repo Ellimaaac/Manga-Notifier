@@ -13,6 +13,8 @@ A simple Chrome extension that tracks manga and webtoon updates and notifies you
 - [Mgeko](https://www.mgeko.cc/)
 - [SushiScan](https://sushiscan.net/)
 - [MangaFire](https://mangafire.to/)
+- [VortexScans](https://vortexscans.org/)
+- [Comix](https://comix.to/)
 
 ## Features
 
